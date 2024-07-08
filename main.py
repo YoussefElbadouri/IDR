@@ -454,7 +454,7 @@ def rule_matches_packet(rule, packet):
 
 
 # Load and parse Snort rules
-rules_file_path = '/Users/youssefelbadouri/Desktop/snort3-community-rules/snort3-community.rules'
+rules_file_path = '/Users/youssefelbadouri/Desktop/snort3-community-rules/snort3-community.rules' #change the path of this file
 with open(rules_file_path, 'r') as file:
     snort_rules = file.readlines()
 
