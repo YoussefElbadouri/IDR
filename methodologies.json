@@ -1,0 +1,53 @@
+{
+  "steps": [
+    {
+      "name": "Détection et Analyse de l'Incident",
+      "description": "Utiliser les alertes générées par Snort et Scapy pour identifier et analyser les incidents potentiels.",
+      "actions": [
+        "Vérification des alertes pour éliminer les faux positifs",
+        "Classification de l'incident et évaluation de l'impact"
+      ]
+    },
+    {
+      "name": "Notification et Escalade",
+      "description": "Notifier les parties prenantes internes et externes, et documenter tous les détails de l'incident.",
+      "actions": [
+        "Notification initiale aux parties prenantes",
+        "Documentation des mesures prises et des ressources affectées"
+      ]
+    },
+    {
+      "name": "Confinement de l'Incident",
+      "description": "Limiter l'impact de l'incident à court et long terme.",
+      "actions": [
+        "Confinement à court terme pour isoler les systèmes compromis",
+        "Développement de stratégies de confinement à long terme"
+      ]
+    },
+    {
+      "name": "Eradication de l'Incident",
+      "description": "Supprimer les composants malveillants et corriger les vulnérabilités identifiées.",
+      "actions": [
+        "Identification de la cause principale",
+        "Suppression de la menace"
+      ]
+    },
+    {
+      "name": "Récupération",
+      "description": "Restauration et validation des systèmes affectés.",
+      "actions": [
+        "Restauration des systèmes",
+        "Validation de la fonctionnalité des systèmes restaurés"
+      ]
+    },
+    {
+      "name": "Suivi Post-Incident",
+      "description": "Analyse post-mortem et mise à jour des procédures.",
+      "actions": [
+        "Analyse post-mortem pour identifier les points forts et les domaines à améliorer",
+        "Mise à jour des procédures et des stratégies",
+        "Préparation d'un rapport final"
+      ]
+    }
+  ]
+}

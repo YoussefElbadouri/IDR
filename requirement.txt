@@ -1,0 +1,10 @@
+PyQt5
+psutil
+socket
+scapy
+re
+collections
+matplotlib
+fpdf
+os
+json
