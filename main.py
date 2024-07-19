@@ -1,15 +1,22 @@
+#search the comments and do what they say :)
+
 from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QTextEdit, QComboBox, QStackedWidget, QFileDialog, QSpacerItem, QSizePolicy
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QPalette, QBrush, QPixmap, QColor
 import psutil
 import socket
-from scapy.all import rdpcap, sniff, IP, TCP
+from scapy.all import rdpcap, sniff, IP, TCP, UDP, ICMP
 import re
 from collections import defaultdict
 import matplotlib.pyplot as plt
 from fpdf import FPDF
 import os
 import json
+import pandas as pd
+import seaborn as sns
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Custom QPushButton class that changes color when hovered or clicked
 class HoverButton(QPushButton):
@@ -43,7 +50,7 @@ class HoverButton(QPushButton):
 
 # QThread subclass for sniffing network packets
 class PacketSnifferThread(QThread):
-    packet_received = pyqtSignal(str)
+    packet_received = pyqtSignal(str, str)
 
     def __init__(self, interface, selected_filter):
         super().__init__()
@@ -55,16 +62,31 @@ class PacketSnifferThread(QThread):
         sniff(iface=self.interface, prn=self.process_packet, store=0, stop_filter=self.should_stop)
 
     def process_packet(self, packet):
-        if self.selected_filter == "TCP" and packet.haslayer(TCP):
-            for rule in parsed_rules:
-                if rule_matches_packet(rule, packet):
-                    alert_msg = f"Alert: {rule['options']['msg']} - {packet[IP].src} -> {packet[IP].dst}"
-                    self.packet_received.emit(alert_msg)
-        elif self.selected_filter == "IP" and packet.haslayer(IP):
-            for rule in parsed_rules:
-                if rule_matches_packet(rule, packet):
-                    alert_msg = f"Alert: {rule['options']['msg']} - {packet[IP].src} -> {packet[IP].dst}"
-                    self.packet_received.emit(alert_msg)
+        if self.selected_filter in ["TCP", "IP", "UDP", "ICMP"]:
+            if self.selected_filter == "TCP" and packet.haslayer(TCP):
+                self.emit_packet(packet, "TCP")
+            elif self.selected_filter == "IP" and packet.haslayer(IP):
+                self.emit_packet(packet, "IP")
+            elif self.selected_filter == "UDP" and packet.haslayer(UDP):
+                self.emit_packet(packet, "UDP")
+            elif self.selected_filter == "ICMP" and packet.haslayer(ICMP):
+                self.emit_packet(packet, "ICMP")
+        else:
+            # If "All Protocols" is selected, process all relevant packets
+            if packet.haslayer(IP):
+                if packet.haslayer(TCP):
+                    self.emit_packet(packet, "TCP")
+                elif packet.haslayer(UDP):
+                    self.emit_packet(packet, "UDP")
+                elif packet.haslayer(ICMP):
+                    self.emit_packet(packet, "ICMP")
+
+    def emit_packet(self, packet, protocol):
+        for rule in parsed_rules:
+            if rule_matches_packet(rule, packet):
+                alert_msg = f"Alert: {rule['options']['msg']} - {packet[IP].src} -> {packet[IP].dst} ({protocol})"
+                severity = rule['options'].get('severity', 'Unknown')
+                self.packet_received.emit(alert_msg, severity)
 
     def should_stop(self, packet):
         return not self.running
@@ -89,7 +111,7 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.sniffer_thread = None
-        self.alerts = defaultdict(int)  # To store and count alerts
+        self.alerts = defaultdict(lambda: {'count': 0, 'severity': 'Unknown'})  # To store and count alerts
 
         # Load methodologies
         self.load_methodologies()
@@ -152,7 +174,7 @@ class MainWindow(QMainWindow):
 
         self.filter_combo = QComboBox()
         self.filter_combo.setFixedSize(700, 40)  # Set combo box size
-        self.filter_combo.addItems(["TCP", "IP", "UDP", "ICMP"])
+        self.filter_combo.addItems(["Tous les protocols", "TCP", "IP", "UDP", "ICMP"])
         scan_live_layout.addWidget(self.filter_combo)
 
         self.realtime_button = HoverButton("Démarrer l'Analyse en Temps Réel")
@@ -178,6 +200,12 @@ class MainWindow(QMainWindow):
         self.report_button.clicked.connect(self.show_report_page)
         self.report_button.setVisible(False)  # Hide the button initially
         scan_live_layout.addWidget(self.report_button)
+
+        self.heatmap_button = HoverButton("Afficher le Heatmap")
+        self.heatmap_button.setFixedSize(700, 40)  # Set button size
+        self.heatmap_button.clicked.connect(self.show_heatmap)
+        self.heatmap_button.setVisible(False)  # Hide the button initially
+        scan_live_layout.addWidget(self.heatmap_button)
 
         # Create a horizontal layout to center the elements
         h_layout = QHBoxLayout()
@@ -212,6 +240,12 @@ class MainWindow(QMainWindow):
         self.pcap_report_button.clicked.connect(self.show_report_page)
         self.pcap_report_button.setVisible(False)  # Hide the button initially
         analyze_pcap_layout.addWidget(self.pcap_report_button)
+
+        self.pcap_heatmap_button = HoverButton("Afficher le Heatmap")
+        self.pcap_heatmap_button.setFixedSize(700, 40)  # Set button size
+        self.pcap_heatmap_button.clicked.connect(self.show_heatmap)
+        self.pcap_heatmap_button.setVisible(False)  # Hide the button initially
+        analyze_pcap_layout.addWidget(self.pcap_heatmap_button)
 
         # Create a horizontal layout to center the elements
         h_pcap_layout = QHBoxLayout()
@@ -293,13 +327,27 @@ class MainWindow(QMainWindow):
         packets = rdpcap(file_name)
         self.pcap_alerts_display.append(f"Analyse du fichier : {file_name}")
         for packet in packets:
-            if packet.haslayer(IP) and packet.haslayer(TCP):
-                for rule in parsed_rules:
-                    if rule_matches_packet(rule, packet):
-                        alert_msg = f"Alert: {rule['options']['msg']} - {packet[IP].src} -> {packet[IP].dst}"
-                        self.alerts[alert_msg] += 1
+            if packet.haslayer(IP):
+                self.process_packet(packet)
         self.display_pcap_alerts()
         self.pcap_report_button.setVisible(True)  # Show the report button
+        self.pcap_heatmap_button.setVisible(True)  # Show the heatmap button
+
+    def process_packet(self, packet):
+        if packet.haslayer(TCP):
+            protocol = "TCP"
+        elif packet.haslayer(UDP):
+            protocol = "UDP"
+        elif packet.haslayer(ICMP):
+            protocol = "ICMP"
+        else:
+            protocol = "IP"
+
+        for rule in parsed_rules:
+            if rule_matches_packet(rule, packet):
+                alert_msg = f"Alert: {rule['options']['msg']} - {packet[IP].src} -> {packet[IP].dst} ({protocol})"
+                severity = rule['options'].get('severity', 'Unknown')
+                self.handle_alert(alert_msg, severity)
 
     def start_realtime_analysis(self):
         selected_interface = self.interface_combo.currentText()
@@ -320,10 +368,14 @@ class MainWindow(QMainWindow):
             self.sniffer_thread = None
         self.display_alerts()
         self.report_button.setVisible(True)  # Show the report button
+        self.heatmap_button.setVisible(True)  # Show the heatmap button
+        self.send_alert_email_with_ip_list("Analysis stopped. Please review the alerts detected during the analysis.")
 
-    def handle_alert(self, message):
-        self.alerts[message] += 1
+    def handle_alert(self, message, severity):
+        self.alerts[message] = {'count': self.alerts[message]['count'] + 1, 'severity': severity}
         self.display_alert(message)
+        if severity in ["high", "medium"]:
+            self.send_alert_email_with_ip_list(message)
 
     def display_alert(self, message):
         self.alerts_display.append(message)
@@ -331,8 +383,8 @@ class MainWindow(QMainWindow):
     def display_alerts(self):
         self.alerts_display.clear()
         if self.alerts:
-            for alert, count in self.alerts.items():
-                self.alerts_display.append(f"{alert} - Detected {count} times")
+            for alert, details in self.alerts.items():
+                self.alerts_display.append(f"{alert} - Detected {details['count']} times")
         else:
             self.alerts_display.append("Aucune alerte détectée.")
 
@@ -340,20 +392,20 @@ class MainWindow(QMainWindow):
         self.pcap_alerts_display.clear()
         self.pcap_alerts_display.setTextColor(QColor(0, 0, 0))  # Set text color to black
         if self.alerts:
-            for alert, count in self.alerts.items():
-                self.pcap_alerts_display.append(f"{alert} - Detected {count} times")
+            for alert, details in self.alerts.items():
+                self.pcap_alerts_display.append(f"{alert} - Detected {details['count']} times")
         else:
             self.pcap_alerts_display.append("Aucune alerte détectée.")
 
     def generate_report(self):
         report_text = "Rapport d'analyse :\n\n"
-        for alert, count in self.alerts.items():
-            report_text += f"{alert} - Detected {count} times\n"
+        for alert, details in self.alerts.items():
+            report_text += f"{alert} - Detected {details['count']} times\n"
 
         # Example of adding a chart to the report
         fig, ax = plt.subplots()
         alerts = list(self.alerts.keys())
-        counts = list(self.alerts.values())
+        counts = [details['count'] for details in self.alerts.values()]
         labels = [alert.split("->")[1].strip() for alert in alerts]  # Use IPs for labels
         ax.barh(labels, counts, color='blue')
         ax.set_xlabel('Nombre de détections')
@@ -377,8 +429,8 @@ class MainWindow(QMainWindow):
         pdf.add_page()
 
         pdf.set_font("Arial", size=12)
-        for alert, count in self.alerts.items():
-            pdf.cell(200, 10, txt=f"{alert} - Detected {count} times", ln=True, align='L')
+        for alert, details in self.alerts.items():
+            pdf.cell(200, 10, txt=f"{alert} - Detected {details['count']} times", ln=True, align='L')
 
         pdf.image('report_chart.png', x=10, y=None, w=190)
 
@@ -400,6 +452,62 @@ class MainWindow(QMainWindow):
                 methodology_text += f" - {action}\n"
             methodology_text += "\n"
         self.methodology_text.setText(methodology_text)
+
+    def show_heatmap(self):
+        ip_counts = defaultdict(lambda: {'count': 0, 'severity': 'Unknown'})
+        for alert, details in self.alerts.items():
+            ip = alert.split("->")[1].strip()
+            ip_counts[ip]['count'] += details['count']
+            ip_counts[ip]['severity'] = details['severity']
+
+        ip_list = list(ip_counts.keys())
+        count_list = [details['count'] for details in ip_counts.values()]
+        severity_list = [details['severity'] for details in ip_counts.values()]
+
+        df = pd.DataFrame({
+            "IP": ip_list,
+            "Count": count_list,
+            "Severity": severity_list
+        })
+
+        plt.figure(figsize=(10, 8))
+        heatmap_data = df.pivot_table(index='IP', values='Count', aggfunc='sum')
+        sns.heatmap(heatmap_data, annot=True, fmt='d', cmap='YlGnBu')
+        plt.title('Heatmap des Alertes')
+        plt.show()
+
+    def send_alert_email_with_ip_list(self, alert_msg):
+        to_email = "ysfelb77@gmail.com" #put the email of the administrator
+        subject = "Medium or High Severity Alert Detected"
+        body = f"A medium or high severity alert was detected:\n\n{alert_msg}\n\n"
+
+        ip_list = [alert.split("->")[1].strip() for alert, details in self.alerts.items() if details['severity'] in ["high", "medium"]]
+        if ip_list:
+            body += "Please review the following IP addresses for potential issues:\n" + "\n".join(ip_list)
+        else:
+            body += "No IP addresses found for medium or high severity alerts."
+
+        server = 'smtp.gmail.com'
+        port = 587
+        from_email = "insay.py@gmail.com"
+        password = "hlmc rgyz mvnd hlvk"
+
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg['From'] = from_email
+        msg['To'] = to_email
+
+        part1 = MIMEText(body, "plain")
+        msg.attach(part1)
+
+        try:
+            with smtplib.SMTP(server, port) as server:
+                server.starttls()
+                server.login(from_email, password)
+                server.send_message(msg)
+            print('Alert email sent successfully.')
+        except Exception as e:
+            print(f'Failed to send alert email: {e}')
 
 
 # Get active network interfaces
@@ -454,7 +562,7 @@ def rule_matches_packet(rule, packet):
 
 
 # Load and parse Snort rules
-rules_file_path = '/Users/youssefelbadouri/Desktop/snort3-community-rules/snort3-community.rules' #change the path of this file
+rules_file_path = '/Users/youssefelbadouri/Desktop/snort3-community-rules/snort3-community.rules' #put the path of your snort file
 with open(rules_file_path, 'r') as file:
     snort_rules = file.readlines()
 
